@@ -1,0 +1,619 @@
+- Dotaz 1: Aktualizace všech objednávek s chybějícím order_approved_at na aktuální čas
+javascript
+Zkopírovat
+Upravit
+db.Orders.updateMany(
+  { order_approved_at: null },
+  { $set: { order_approved_at: new Date() } }
+)
+Popis:
+
+updateMany mění více dokumentů najednou.
+
+order_approved_at: null vyhledá objednávky bez hodnoty schválení.
+
+$set nastaví tuto hodnotu na aktuální datum (new Date()).
+
+Hodí se např. při importu dat, kde některá pole chybí.
+
+- Dotaz 2: Smazání produktů bez kategorie
+javascript
+Zkopírovat
+Upravit
+db.Products.deleteMany({ product_category_name: null })
+Popis:
+
+deleteMany odstraní všechny produkty, které nemají vyplněnou kategorii.
+
+Typické při čištění dat po importu ze zdroje, kde některé kategorie chybí.
+
+- Dotaz 3: Přidání poznámky ke každé objednávce, která byla doručena po odhadovaném datu
+javascript
+Zkopírovat
+Upravit
+db.Orders.updateMany(
+  {
+    $expr: { $gt: ["$order_delivered_customer_date", "$order_estimated_delivery_date"] }
+  },
+  { $set: { delivery_status: "late" } }
+)
+Popis:
+
+$expr umožňuje porovnávat dvě pole uvnitř dokumentu.
+
+$gt ověřuje, zda order_delivered_customer_date je větší než order_estimated_delivery_date.
+
+$set přidá nové pole delivery_status se stavem „late“.
+
+- Dotaz 4: Přičtení 10 % k ceně dopravy u všech položek s cenou nad 100
+javascript
+Zkopírovat
+Upravit
+db.OrderItems.updateMany(
+  { price: { $gt: 100 } },
+  [{ $set: { freight_value: { $multiply: ["$freight_value", 1.1] } } }]
+)
+Popis:
+
+Použití „pipeline-style“ syntaxe updateMany (dostupné v MongoDB 4.2+).
+
+$multiply zvýší hodnotu freight_value o 10 % u všech drahých položek.
+
+- Dotaz 5: Přidání pole "expensive": true k produktům dražším než 250
+javascript
+Zkopírovat
+Upravit
+db.OrderItems.updateMany(
+  { price: { $gt: 250 } },
+  { $set: { expensive: true } }
+)
+Popis:
+
+Rychlá klasifikace produktů na základě ceny.
+
+Může se později hodit pro filtrování nebo agregaci.
+
+- Dotaz 6: Změna typu data u produktů – převod product_weight_g z čísla na text
+javascript
+Zkopírovat
+Upravit
+db.Products.updateMany(
+  {},
+  [{ $set: { product_weight_g: { $toString: "$product_weight_g" } } }]
+)
+Popis:
+
+Pomocí „aggregation pipeline update“ převádíme datový typ.
+
+$toString převede číslo na string.
+
+Hodí se při přechodu na jiný typ datové reprezentace (např. kvůli integraci s externím systémem).
+
+-- Kategorie: Agregační funkce
+- Dotaz 1: Výpočet celkového příjmu (cena + doprava) podle prodejce
+javascript
+Zkopírovat
+Upravit
+db.OrderItems.aggregate([
+  {
+    $group: {
+      _id: "$seller_id",
+      total_revenue: { $sum: { $add: ["$price", "$freight_value"] } }
+    }
+  },
+  { $sort: { total_revenue: -1 } }
+])
+Popis:
+
+$group sdružuje podle seller_id.
+
+$add sečte price a freight_value.
+
+$sum následně spočítá celkový příjem za každého prodejce.
+
+$sort seřadí podle příjmu sestupně.
+
+- Dotaz 2: Průměrná doba doručení (ve dnech)
+javascript
+Zkopírovat
+Upravit
+db.Orders.aggregate([
+  {
+    $match: {
+      order_delivered_customer_date: { $ne: null },
+      order_purchase_timestamp: { $ne: null }
+    }
+  },
+  {
+    $project: {
+      days_to_deliver: {
+        $divide: [
+          { $subtract: ["$order_delivered_customer_date", "$order_purchase_timestamp"] },
+          1000 * 60 * 60 * 24
+        ]
+      }
+    }
+  },
+  {
+    $group: {
+      _id: null,
+      avg_days: { $avg: "$days_to_deliver" }
+    }
+  }
+])
+Popis:
+
+$subtract spočítá rozdíl mezi daty ve formátu milisekund.
+
+$divide převede milisekundy na dny.
+
+$avg spočítá průměr pro všechny objednávky.
+
+- Dotaz 3: Počet objednávek podle měsíce
+javascript
+Zkopírovat
+Upravit
+db.Orders.aggregate([
+  {
+    $project: {
+      month: { $month: "$order_purchase_timestamp" }
+    }
+  },
+  {
+    $group: {
+      _id: "$month",
+      total_orders: { $sum: 1 }
+    }
+  },
+  { $sort: { _id: 1 } }
+])
+Popis:
+
+$month extrahuje číslo měsíce z order_purchase_timestamp.
+
+$group spočítá počet objednávek na každý měsíc.
+
+- Dotaz 4: Nejčastěji prodávaný produkt
+javascript
+Zkopírovat
+Upravit
+db.OrderItems.aggregate([
+  {
+    $group: {
+      _id: "$product_id",
+      count: { $sum: 1 }
+    }
+  },
+  { $sort: { count: -1 } },
+  { $limit: 1 }
+])
+Popis:
+
+$group spočítá počet výskytů každého product_id.
+
+$sort a $limit určí produkt s nejvyšším počtem prodaných kusů.
+
+- Dotaz 5: Průměrná cena produktu v jednotlivých kategoriích
+javascript
+Zkopírovat
+Upravit
+db.Products.aggregate([
+  {
+    $lookup: {
+      from: "OrderItems",
+      localField: "product_id",
+      foreignField: "product_id",
+      as: "order_items"
+    }
+  },
+  { $unwind: "$order_items" },
+  {
+    $group: {
+      _id: "$product_category_name",
+      average_price: { $avg: "$order_items.price" }
+    }
+  },
+  { $sort: { average_price: -1 } }
+])
+Popis:
+
+$lookup spojí produkty s odpovídajícími objednávkami.
+
+$unwind rozbalí seznam objednávek.
+
+$group podle kategorie spočítá průměrnou cenu.
+
+- Dotaz 6: Celková cena + doprava všech položek v každé objednávce
+javascript
+Zkopírovat
+Upravit
+db.OrderItems.aggregate([
+  {
+    $group: {
+      _id: "$order_id",
+      total_value: {
+        $sum: { $add: ["$price", "$freight_value"] }
+      }
+    }
+  },
+  { $sort: { total_value: -1 } }
+])
+Popis:
+
+Vypočítá celkovou hodnotu každé objednávky (včetně dopravy).
+
+Užitečné pro identifikaci „nejdražších“ objednávek.
+
+-- Kategorie: Nested (embedded) dokumenty
+- Dotaz 1: Přidání vnořeného dokumentu dimensions ke všem produktům
+javascript
+Zkopírovat
+Upravit
+db.Products.updateMany(
+  {},
+  {
+    $set: {
+      dimensions: {
+        length_cm: "$product_length_cm",
+        height_cm: "$product_height_cm",
+        width_cm: "$product_width_cm"
+      }
+    }
+  }
+)
+Popis:
+
+Vytváříme nové pole dimensions ve formátu embedded dokument.
+
+Hodnoty přebíráme z existujících polí produktu.
+
+Vylepšuje čitelnost a strukturaci dat.
+
+- Dotaz 2: Vyhledání produktů s výškou větší než 10 cm (vnořené pole)
+javascript
+Zkopírovat
+Upravit
+db.Products.find({ "dimensions.height_cm": { $gt: 10 } })
+Popis:
+
+Dotaz do vnořeného dokumentu (dimensions.height_cm).
+
+Pomocí $gt filtrujeme pouze produkty vyšší než 10 cm.
+
+- Dotaz 3: Změna hodnoty width_cm v embedded dokumentu
+javascript
+Zkopírovat
+Upravit
+db.Products.updateMany(
+  { "dimensions.width_cm": { $lt: 10 } },
+  { $set: { "dimensions.width_cm": 10 } }
+)
+Popis:
+
+Vyhledá produkty s šířkou menší než 10 cm a nastaví ji na 10.
+
+Ukazuje aktualizaci vnořeného pole.
+
+- Dotaz 4: Odstranění vnořeného dokumentu dimensions
+javascript
+Zkopírovat
+Upravit
+db.Products.updateMany(
+  {},
+  { $unset: { dimensions: "" } }
+)
+Popis:
+
+unset odstraní celé vnořené pole dimensions z dokumentu.
+
+Vhodné při zpětné migraci nebo úpravě struktury.
+
+- Dotaz 5: Filtrace objednávek, které mají vnořený záznam o pozdním doručení
+javascript
+Zkopírovat
+Upravit
+db.Orders.find({
+  delivery_status: { $exists: true },
+  "delivery_status.late": true
+})
+Popis:
+
+Kombinace $exists a filtrování hodnoty v embedded poli.
+
+Užitečné, pokud např. delivery_status obsahuje složené informace jako { late: true, delay_days: 3 }.
+
+- Dotaz 6: Přidání vnořeného pole log s informacemi o editaci
+javascript
+Zkopírovat
+Upravit
+db.Orders.updateMany(
+  {},
+  {
+    $set: {
+      log: {
+        updated_by: "admin",
+        updated_at: new Date()
+      }
+    }
+  }
+)
+Popis:
+
+Přidání auditního logu jako embedded dokument do každé objednávky.
+
+Pomáhá sledovat změny (např. pro administraci, historii).
+
+- Kategorie: Indexy
+-- Dotaz 1: Vytvoření složeného indexu na order_status a order_purchase_timestamp
+javascript
+Zkopírovat
+Upravit
+db.Orders.createIndex({ order_status: 1, order_purchase_timestamp: -1 })
+Popis:
+
+createIndex vytváří index pro rychlé vyhledávání.
+
+Kombinovaný index: order_status vzestupně, order_purchase_timestamp sestupně.
+
+Zrychlí dotazy, které filtrují podle stavu a řadí podle data.
+
+-- Dotaz 2: Vyhledání objednávek se specifickým stavem a použití indexu
+javascript
+Zkopírovat
+Upravit
+db.Orders.find({ order_status: "delivered" }).hint({ order_status: 1 })
+Popis:
+
+Používáme index pomocí $hint, abychom vynutili konkrétní index.
+
+Vhodné při optimalizaci dotazů.
+
+-- Dotaz 3: Vytvoření unikátního indexu na product_id
+javascript
+Zkopírovat
+Upravit
+db.Products.createIndex({ product_id: 1 }, { unique: true })
+Popis:
+
+Zajišťuje, že product_id nebude duplicitní.
+
+Chrání před chybami při importu dat.
+
+-- Dotaz 4: Vytvoření textového indexu na product_category_name
+javascript
+Zkopírovat
+Upravit
+db.Products.createIndex({ product_category_name: "text" })
+Popis:
+
+Umožňuje vyhledávání v textových polích.
+
+Nutné pro použití operátoru $text.
+
+-- Dotaz 5: Vyhledávání pomocí textového indexu
+javascript
+Zkopírovat
+Upravit
+db.Products.find({ $text: { $search: "perfumaria" } })
+Popis:
+
+Používá textový index k hledání produktů v dané kategorii.
+
+$search je základní fulltextová funkce MongoDB.
+
+-- Dotaz 6: Získání informací o využití indexu při dotazu
+javascript
+Zkopírovat
+Upravit
+db.Orders.find({ order_status: "delivered" }).explain("executionStats")
+Popis:
+
+explain("executionStats") zobrazí, zda byl při dotazu využit index.
+
+Diagnostický nástroj pro kontrolu výkonu a ladění dotazů.
+
+-- Kategorie: Relace mezi kolekcemi (JOIN přes $lookup)
+Tato kategorie se zaměřuje na práci s více kolekcemi současně. Pomocí $lookup (ekvivalent LEFT JOIN) propojujeme data mezi např. Orders, OrderItems a Products.
+
+-- Dotaz 1: Spojení OrderItems s produkty – zobrazení názvu k položkám
+javascript
+Zkopírovat
+Upravit
+db.OrderItems.aggregate([
+  {
+    $lookup: {
+      from: "Products",
+      localField: "product_id",
+      foreignField: "product_id",
+      as: "product_info"
+    }
+  },
+  { $unwind: "$product_info" },
+  {
+    $project: {
+      order_item_id: 1,
+      product_id: 1,
+      price: 1,
+      category: "$product_info.product_category_name"
+    }
+  }
+])
+Popis:
+
+$lookup propojí produkty na základě product_id.
+
+$unwind rozbalí pole product_info na jednotlivé dokumenty.
+
+$project zobrazí pouze potřebné sloupce.
+
+-- Dotaz 2: Spojení Orders a OrderItems – celková cena objednávky
+javascript
+Zkopírovat
+Upravit
+db.Orders.aggregate([
+  {
+    $lookup: {
+      from: "OrderItems",
+      localField: "order_id",
+      foreignField: "order_id",
+      as: "items"
+    }
+  },
+  { $unwind: "$items" },
+  {
+    $group: {
+      _id: "$order_id",
+      total_price: {
+        $sum: { $add: ["$items.price", "$items.freight_value"] }
+      }
+    }
+  },
+  { $sort: { total_price: -1 } }
+])
+Popis:
+
+Spojí objednávky s položkami.
+
+Vypočítá celkovou hodnotu objednávky (včetně dopravy).
+
+Seřadí objednávky dle ceny.
+
+-- Dotaz 3: Najdi všechny objednávky obsahující produkty z určité kategorie
+javascript
+Zkopírovat
+Upravit
+db.OrderItems.aggregate([
+  {
+    $lookup: {
+      from: "Products",
+      localField: "product_id",
+      foreignField: "product_id",
+      as: "product"
+    }
+  },
+  { $unwind: "$product" },
+  {
+    $match: {
+      "product.product_category_name": "perfumaria"
+    }
+  },
+  {
+    $group: {
+      _id: "$order_id",
+      products: { $addToSet: "$product.product_id" }
+    }
+  }
+])
+Popis:
+
+Vyfiltruje položky, které odkazují na produkty dané kategorie.
+
+Vrací ID objednávek, které tyto produkty obsahují.
+
+-- Dotaz 4: Počet objednávek podle kategorie produktů
+javascript
+Zkopírovat
+Upravit
+db.OrderItems.aggregate([
+  {
+    $lookup: {
+      from: "Products",
+      localField: "product_id",
+      foreignField: "product_id",
+      as: "product"
+    }
+  },
+  { $unwind: "$product" },
+  {
+    $group: {
+      _id: "$product.product_category_name",
+      total_orders: { $addToSet: "$order_id" }
+    }
+  },
+  {
+    $project: {
+      category: "$_id",
+      total_order_count: { $size: "$total_orders" },
+      _id: 0
+    }
+  },
+  { $sort: { total_order_count: -1 } }
+])
+Popis:
+
+Počítá, kolik různých objednávek obsahovalo produkty z jednotlivých kategorií.
+
+-- Dotaz 5: Detailní seznam položek objednávky (JOIN všech tří kolekcí)
+javascript
+Zkopírovat
+Upravit
+db.Orders.aggregate([
+  {
+    $match: { order_status: "delivered" }
+  },
+  {
+    $lookup: {
+      from: "OrderItems",
+      localField: "order_id",
+      foreignField: "order_id",
+      as: "items"
+    }
+  },
+  { $unwind: "$items" },
+  {
+    $lookup: {
+      from: "Products",
+      localField: "items.product_id",
+      foreignField: "product_id",
+      as: "product"
+    }
+  },
+  { $unwind: "$product" },
+  {
+    $project: {
+      order_id: 1,
+      product_name: "$product.product_category_name",
+      price: "$items.price",
+      freight: "$items.freight_value",
+      delivered: "$order_delivered_customer_date"
+    }
+  }
+])
+Popis:
+
+Kompletní pohled na objednávku, produkty a doručení.
+
+Tři kolekce spojené do jednoho výstupu.
+
+-- Dotaz 6: Kategorie s nejvyšším průměrným ziskem na položku
+javascript
+Zkopírovat
+Upravit
+db.OrderItems.aggregate([
+  {
+    $lookup: {
+      from: "Products",
+      localField: "product_id",
+      foreignField: "product_id",
+      as: "product"
+    }
+  },
+  { $unwind: "$product" },
+  {
+    $group: {
+      _id: "$product.product_category_name",
+      avg_revenue: {
+        $avg: { $add: ["$price", "$freight_value"] }
+      }
+    }
+  },
+  { $sort: { avg_revenue: -1 } }
+])
+Popis:
+
+Spojí položky s kategoriemi produktů.
+
+Vypočítá průměrný zisk na jednu položku v každé kategorii.
+
+
+
